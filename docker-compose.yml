@@ -1,0 +1,140 @@
+version: "3"
+services:
+  krakend_ce:
+    # The :watch image restarts the service automatically when the configuration files change.
+    # Do not use this image in production, it's meant to speed up your testing and development.
+    image: devopsfaith/krakend:watch
+    volumes:
+      - ./config/krakend:/etc/krakend
+    ports:
+      - "1234:1234"
+      - "8080:8080"
+      - "8090:8090"
+      #- "5432:5432"
+    command: ["run", "-d", "-c", "/etc/krakend/krakend.json"]
+    depends_on:
+      - fake_api
+      - jaeger
+      - postgres
+  krakend-designer:
+    image: devopsfaith/krakendesigner:latest
+    depends_on:
+      - krakend_ce
+    ports:
+      - "8401:80"
+  grafana:
+    image: grafana/grafana:9.1.2
+    ports:
+      - "4000:3000"
+    volumes:
+      - "./config/grafana/datasources/all.yml:/etc/grafana/provisioning/datasources/all.yml"
+      - "./config/grafana/dashboards/all.yml:/etc/grafana/provisioning/dashboards/all.yml"
+      - "./config/grafana/krakend:/var/lib/grafana/dashboards/krakend"
+  influxdb:
+    image: influxdb:1.8.10
+    environment:
+      - "INFLUXDB_DB=krakend"
+      - "INFLUXDB_USER=krakend-dev"
+      - "INFLUXDB_USER_PASSWORD=pas5w0rd"
+      - "INFLUXDB_ADMIN_USER=admin"
+      - "INFLUXDB_ADMIN_PASSWORD=supersecretpassword"
+    ports:
+      - "8086:8086"
+  jaeger:
+    image: jaegertracing/all-in-one:1
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+  elasticsearch:
+    image: elasticsearch:8.4.1
+    environment:
+      - "discovery.type=single-node"
+      - "xpack.security.enabled=false"
+      - "xpack.security.transport.ssl.enabled=false"
+      - "xpack.security.http.ssl.enabled=false"
+    ports:
+      - "19200:9200"
+      - "9300:9300"
+  kibana:
+    image: kibana:8.4.1
+    ports:
+      - "5601:5601"
+  logstash:
+    image: logstash:8.4.1
+    ports:
+      - "12201:12201/udp"
+      - "5044:5044"
+    environment:
+      - "xpack.monitoring.elasticsearch.url=http://elasticsearch:9200"
+    volumes:
+      - ./config/logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    command: ["-f", "/usr/share/logstash/pipeline/logstash.conf"]
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "15672:15672"
+  #services-databases
+  postgres:
+    image: postgres:latest
+    user: root  # needed because windows hates me
+    ports:
+      - "25432:5432"
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: password
+  memcached:
+    restart: unless-stopped
+    image: memcached:1.6.7-alpine
+    command: [ "-m", "512m" ]
+    environment:
+      MEMCACHED_PORT: 11211
+    ports:
+      - ${MEMCACHED_PORT}:11211
+  # redis:
+  #   image: "redis:alpine"
+  #   command: ["redis-server", "--require_password", "password"]
+  #   ports:
+  #     - "26379:6379"
+  #services-api
+  fake_api:
+    image: ghcr.io/lpereira/lwan:latest
+    volumes:
+      - ./data:/wwwroot
+    ports:
+      - "8000:8080"
+  #services-front-end
+  web:
+    build:
+      context: images/frontend/spa-auth-web
+    ports:
+      - "3000:3000"
+  #services-auth
+  keycloak:
+    image: jboss/keycloak:13.0.1
+    restart: always
+    depends_on:
+      - krakend_ce
+      - postgres
+    ports:
+      - "8403:8080"  # expose to host port 8403
+    environment:
+      KEYCLOAK_LOGLEVEL: DEBUG
+      WILDFLY_LOGLEVEL: DEBUG
+      DB_VENDOR: POSTGRES
+      DB_ADDR: postgres
+      DB_PORT: 5432
+      DB_DATABASE: keycloak
+      DB_USER: keycloak
+      DB_PASSWORD: password
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: admin
+      JDBC_PARAMS: "ssl=true"
+  jwt_revoke:
+    build:
+      context: images/backend/jwt-revoker
+    ports:
+      - "9000:8080"
+    depends_on:
+      - krakend_ce
+    restart: always
